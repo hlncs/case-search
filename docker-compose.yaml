@@ -1,0 +1,30 @@
+services:
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    environment:
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      SSL_CERT_DIR: /etc/ssl/certs
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: postgres
+    environment:
+      POSTGRES_DB: ai
+      POSTGRES_USER: aiuser
+      POSTGRES_PASSWORD: aipassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  ollama:
+  postgres_data:

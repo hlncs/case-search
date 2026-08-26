@@ -1,0 +1,223 @@
+Prompt 01 - Overall Architecture
+You are a senior full-stack software architect.
+
+Build and maintain a complete legal cases application with a React frontend and FastAPI backend, featuring PostgreSQL/pgvector semantic search over legal documents, RAG-powered analysis, and an agent-style search workflow.
+
+Requirements
+Frontend
+Node.js 18+ based application.
+Use React + TypeScript.
+Use Vite.
+Use Material UI (MUI).
+Use Recharts for data visualizations.
+Responsive layout (mobile: <640px, tablet: 640-1024px, desktop: >1024px).
+State management: Use React Context API with custom hooks (avoid Redux for simplicity).
+Backend
+Python 3.12+
+FastAPI
+Pandas
+PyArrow
+Requests
+Uvicorn
+python-docx (for .docx parsing)
+PyPDF2 or pdfplumber (for .pdf parsing)
+sentence-transformers (optional, for transformer embeddings when a local model is available)
+scikit-learn HashingVectorizer (local fallback embeddings when Hugging Face is blocked)
+psycopg2-binary (PostgreSQL adapter)
+python-dotenv (configuration management)
+ollama-python (for Ollama LLM integration)
+langchain-ollama and langchain-community (for RAG and agent frameworks)
+Pydantic (for validation)
+Data Storage
+PostgreSQL with pgvector extension for document metadata, full extracted text, chunk text, vector embeddings, and semantic search.
+Primary implemented tables: documents and document_chunks.
+Current local fallback embedding provider: hashing vectors with dimension 384.
+Optional embedding model: sentence-transformers/all-MiniLM-L6-v2 when downloaded locally or reachable from the network.
+
+LLM & Inference
+Ollama hosted locally on localhost:11434, usually through the docker-compose ollama service.
+LLM Model: llama3.2:3b for local CPU-friendly inference when available.
+RAG and Agent must remain useful when Ollama is missing, slow, or times out by returning retrieval-based fallback answers from PostgreSQL search results.
+Both Ollama and PostgreSQL services defined in docker-compose.yaml
+Architecture
+The application is search-first with RAG-powered semantic analysis and autonomous agents:
+
+1. Users search the frontend using natural language queries
+2. Frontend sends query to backend API (standard search or RAG-enhanced search)
+3. Backend converts query to vector embedding using the configured embedding provider
+4. PostgreSQL pgvector performs similarity search on document chunk embeddings
+5. (RAG Mode) Retrieved chunks augment the prompt sent to Ollama llama3.2:3b when available, otherwise a grounded excerpt-based fallback is returned
+6. (Agent Mode) Agent uses search tools and completes with ranked sources; if Ollama is unavailable or slow, it skips LLM planning and returns a retrieval-based answer
+7. Matching cases returned as ranked results with analysis and sources
+8. Frontend displays results as interactive cards with case details and LLM analysis
+
+RAG (Retrieval-Augmented Generation) Pipeline:
+- Query → Embed → Vector Search → Top-k chunks retrieved
+- Context Assembly: Combine retrieved chunks with system prompt
+- LLM Inference: Send augmented prompt to Ollama llama3.2:3b when installed and responsive
+- Grounded Response: Generated answer backed by case citations, or fallback answer based directly on retrieved excerpts
+- Prevents hallucination by keeping LLM/fallback output within known documents
+
+AI Agent Framework:
+- Tool Definition: Search, Retrieve, Analyze, Synthesize tools
+- Agent Loop: Think → Use Tools → Decide Next Action → Loop until resolution when LLM is available; otherwise perform direct search and return sources quickly
+- Example: "Find negligence cases from 2025 where defendant won"
+  * Agent searches for negligence cases → finds 5 results
+  * Retrieves details for each → analyzes judge rulings
+  * Synthesizes comparison → returns ranked results with reasoning
+
+Data Flow:
+- Document Ingestion: Users upload .docx/.pdf/.txt files or run scripts/init_documents.py → backend parses → chunks → generates embeddings → stores metadata, full text, chunks, and embeddings in PostgreSQL
+- Standard Search: Query → embedding → vector similarity search → ranking by relevance → return top-k results
+- RAG Search: Query → embedding → vector search → retrieve chunks → augment prompt → Ollama inference → grounded response + citations
+- Agent Query: User question → agent planning → tool calls (search, retrieve, analyze) → synthesis → final answer with reasoning
+Module boundaries
+Backend Python structure:
+app/
+  main.py (FastAPI app initialization, middleware, CORS setup)
+  config.py (environment variables, database config)
+  routes/ (API endpoints by domain)
+    search.py (vector search endpoints)
+    documents.py (document upload, ingestion)
+    cases.py (case retrieval)
+  services/ (business logic)
+    search_service.py (embedding, vector similarity)
+    document_service.py (document parsing, chunking with overlap, batch embedding)
+    case_service.py (case data retrieval)
+    rag_service.py (RAG pipeline: retrieval + context assembly + LLM inference)
+    agent_service.py (autonomous agent framework with tool definitions and agent loop)
+    llm_service.py (Ollama integration, chat/inference API calls)
+  repositories/ (data access)
+    postgres_repository.py (PostgreSQL document storage, pgvector schema, vector search, case detail/list views)
+  models/ (Pydantic models)
+    schemas.py (API request/response models)
+    domain.py (core domain objects)
+  utils/
+    embeddings.py (embedding model loading)
+    parsers.py (document parsing for .docx/.pdf/.txt)
+    logger.py (structured logging)
+
+Frontend React structure:
+src/
+  pages/ (route components)
+    SearchPage.tsx
+    CaseDetailPage.tsx
+    UploadPage.tsx
+  components/ (reusable UI)
+    SearchBar.tsx
+    CaseCard.tsx
+    ResultsList.tsx
+    Navbar.tsx
+  hooks/ (custom React hooks)
+    useSearch.ts (search query state + API calls)
+    useDocuments.ts (upload state)
+    useCaseDetail.ts (case fetch state)
+  services/ (API client)
+    apiClient.ts (axios or fetch wrapper)
+    caseService.ts (API calls for cases)
+  models/ (TypeScript interfaces)
+    models.ts (Case, SearchResult, Document types)
+  utils/
+    formatting.ts (date/text formatting)
+    constants.ts (API base URL, etc.)
+
+API Endpoints
+Search:
+  POST /api/search
+  Request: { "query": "negligence in employment", "limit": 10, "offset": 0 }
+  Response: { "results": [{ "case_id": "uuid", "title": string, "year": int, "judge": string, "decision": string, "relevance_score": float }], "total": int }
+
+RAG Query (Retrieval-Augmented Generation):
+  POST /api/rag-query
+  Request: { "question": "What are defenses to negligence claims?", "limit": 5 }
+  Response: { "answer": string, "sources": [{ "case_id": string, "title": string, "year": int, "chunk_id": string }], "model": "llama3.2" }
+  Process: Retrieves relevant chunks → augments prompt → sends to Ollama when available → returns grounded answer with citations; falls back to retrieved excerpts if Ollama is slow/unavailable
+
+Agent Query (Autonomous AI Agent):
+  POST /api/agent-query
+  Request: { "query": "Find all negligence cases from 2025 where defendant won and analyze the defense strategy" }
+  Response: { "answer": string, "reasoning_trace": [{ "step": int, "action": string, "result": string }], "sources": [{ "case_id": string, "title": string }], "status": "completed" }
+  Process: Agent loop or fallback: uses search/retrieval tools → returns ranked sources and reasoning trace; avoids long loops when Ollama is unavailable
+
+Documents:
+  POST /api/documents/upload (multipart/form-data)
+  GET /api/documents (list uploaded documents)
+  DELETE /api/documents/{doc_id}
+
+Cases:
+  GET /api/cases/{case_id} (retrieve full case details)
+  GET /api/cases (list all cases with pagination)
+
+Health:
+  GET /health (returns { "status": "ok" })
+
+Environment & Configuration
+Backend (.env file):
+  DATABASE_URL=postgresql://aiuser:aipassword@localhost:5432/ai
+  EMBEDDING_PROVIDER=hashing
+  EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+  EMBEDDING_MODEL_PATH=./data/models/all-MiniLM-L6-v2  # optional, when local model is available
+  EMBEDDING_DIMENSION=384
+  SSL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+  OLLAMA_BASE_URL=http://localhost:11434
+  OLLAMA_MODEL=llama3.2:3b
+  OLLAMA_TIMEOUT=10
+  OLLAMA_NUM_PREDICT=256
+  UPLOAD_DIR=./uploads
+  LOG_LEVEL=INFO
+  CHUNK_SIZE=512
+  CHUNK_OVERLAP=100
+  RAG_MAX_CHUNKS=5
+  RAG_SYSTEM_PROMPT="You are a legal case analyst. Answer the user's question using ONLY the provided case excerpts. Always cite the case names and years."
+
+Frontend (.env file):
+  VITE_API_BASE_URL=http://localhost:8000
+
+Running the project
+
+Prerequisites:
+1. Ensure Docker and Docker Compose are installed
+2. docker-compose up -d (starts PostgreSQL with pgvector and Ollama services)
+3. Verify Ollama is ready: curl http://localhost:11434/api/tags
+4. Pull llama3.2:3b model (if not present): docker compose exec ollama ollama pull llama3.2:3b
+
+Backend Setup:
+1. python -m venv venv
+2. source venv/bin/activate  # Windows: venv\Scripts\activate
+3. pip install -r requirements.txt
+4. Create .env file with database credentials, Ollama config, and RAG settings
+5. Initialize PostgreSQL with documents and embeddings: python scripts/init_documents.py
+6. Verify embeddings: python scripts/verify_embeddings.py
+7. uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+Frontend Setup:
+1. npm install
+2. Create .env file with VITE_API_BASE_URL
+3. npm run dev (development server on http://localhost:5173)
+4. npm run build (production build)
+
+Notes:
+- PostgreSQL and Ollama services are automatically started via docker-compose.yaml (pgvector/pgvector:pg17 with pgvector pre-installed)
+- Ollama model pulls may require corporate CA configuration in docker-compose.yaml; mount /etc/ssl/certs/ca-certificates.crt into the container and set SSL_CERT_FILE
+- llama3.2:3b is CPU-capable but can be slow; backend uses OLLAMA_TIMEOUT and OLLAMA_NUM_PREDICT to stay under frontend timeouts
+- CORS is enabled on backend for localhost:5173
+- Document uploads are temporarily stored in UPLOAD_DIR before processing
+- Vector embeddings are generated during ingestion and persisted in PostgreSQL document_chunks.embedding
+- Search results are ranked by cosine similarity score
+- RAG Pipeline:
+  * Retrieves top-k chunks from PostgreSQL using vector similarity
+  * Assembles context from multiple chunks with chunk boundaries
+  * Sends augmented prompt to Ollama via REST API at localhost:11434
+  * LLM generates grounded response backed by retrieved chunks
+  * Response includes source citations (case_id, chunk_id) for traceability
+- Agent Framework:
+  * Defines tools for search, retrieve, analyze, synthesize operations
+  * Agent loop: parse query → select tool → execute → observe result → repeat until done
+  * Reasoning trace captured for transparency and debugging
+  * Each agent action is logged with full context
+- Document Chunking Strategy:
+  * Use overlapping text chunks (512 tokens per chunk, 100 token overlap)
+  * Overlap enables context preservation across chunk boundaries
+  * Better matching for queries spanning chunk boundaries
+  * Each chunk embedded independently, with full metadata (doc_id, page, chunk_index) stored in PostgreSQL
+  * Chunks split at sentence boundaries when possible to maintain semantic coherence
